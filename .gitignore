@@ -1,0 +1,11 @@
+/outputs/alexnet/
+/outputs/lenet/
+/outputs/alexnet_metrics_acc.png
+/outputs/alexnet_metrics_loss.png
+/outputs/lenet_metrics_acc.png
+/outputs/lenet_metrics_loss.png
+/outputs/experiment_results.json
+/data/cifar-10-batches-py/
+/data/MNIST/
+/data/cifar-10-python.tar.gz
+/.idea
