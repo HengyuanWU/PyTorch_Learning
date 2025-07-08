@@ -1,6 +1,7 @@
 # utils/trainer.py
 
 import os
+from pathlib import Path
 import torch
 
 def train_epoch(model, loader, optimizer, criterion, device, log_interval):
@@ -41,16 +42,41 @@ def fit(model,
         min_delta=0.,
         log_interval=100,
         output_dir="outputs",
-        prefix="model"):
-    os.makedirs(output_dir, exist_ok=True)
+        prefix="model",
+        custom_train_epoch_fn=None):
+    """
+    通用训练流程，支持早停和检查点保存
+    
+    :param model: 要训练的模型
+    :param train_loader: 训练数据加载器
+    :param val_loader: 验证数据加载器
+    :param optimizer: 优化器
+    :param criterion: 损失函数
+    :param device: 训练设备
+    :param epochs: 训练轮数
+    :param patience: 早停耐心值
+    :param min_delta: 最小改进阈值
+    :param log_interval: 日志打印间隔
+    :param output_dir: 输出目录
+    :param prefix: 保存文件前缀
+    :param custom_train_epoch_fn: 可选的自定义训练函数，用于替代默认的train_epoch函数
+    :return: 历史指标列表
+    """
+    # 确保输出目录存在
+    output_path = Path(output_dir)
+    output_path.mkdir(parents=True, exist_ok=True)
+    
     best_loss = float('inf')
     no_improve = 0
     best_path = os.path.join(output_dir, f"{prefix}_best.pth")
     history = []
 
+    # 使用自定义训练函数或默认函数
+    train_fn = custom_train_epoch_fn if custom_train_epoch_fn else train_epoch
+
     for epoch in range(1, epochs+1):
         print(f"\n=== Epoch {epoch} ===")
-        train_epoch(model, train_loader, optimizer, criterion, device, log_interval)
+        train_fn(model, train_loader, optimizer, criterion, device, log_interval)
         val_loss, val_acc = evaluate(model, val_loader, criterion, device)
         history.append((val_loss, val_acc))
 
@@ -69,7 +95,13 @@ def fit(model,
 
         if no_improve >= patience:
             print(f"Early stopping at epoch {epoch}")
-            model.load_state_dict(torch.load(best_path))
+            try:
+                if os.path.exists(best_path):
+                    model.load_state_dict(torch.load(best_path, weights_only=True))
+                else:
+                    print(f"Warning: Best model file {best_path} not found. Using current model state.")
+            except Exception as e:
+                print(f"Error loading best model: {e}. Using current model state.")
             break
 
     return history

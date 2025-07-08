@@ -69,7 +69,7 @@ def plot_experiment_comparison(results: List[Dict], metric: str = 'accuracy'):
     plt.tight_layout()
     plt.show()
 
-def plot_hyperparam_parallel(results: list[dict]):
+def plot_hyperparam_parallel(results: List[Dict]):
     """
     用平行坐标图展示各超参组合与最终 accuracy 的关系。
 

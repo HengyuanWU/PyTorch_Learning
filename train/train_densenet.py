@@ -13,7 +13,7 @@
 
 import os
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional, List, Tuple, cast, Protocol
 
 import torch
 import torch.nn as nn
@@ -25,9 +25,14 @@ from models.densenet import DenseNet, DenseNetCustom
 from utils.dataloader import get_dataloader, PROJECT_ROOT
 from utils.trainer import fit
 
+# 类型定义
 ModelType = Literal['densenet121', 'densenetcustom']
 
-def get_cifar10_loader(batch_size: int = 64, train: bool = True) -> DataLoader[tuple[torch.Tensor, torch.Tensor]]:
+# 定义一个协议类型，确保对象有__len__方法
+class Sized(Protocol):
+    def __len__(self) -> int: ...
+
+def get_cifar10_loader(batch_size: int = 64, train: bool = True) -> DataLoader:
     """构造用于 DenseNet 的 CIFAR-10 数据加载器。
     
     使用 [get_dataloader](file://utils/dataloader.py) 工具函数实现标准化数据加载流程，
@@ -69,8 +74,10 @@ def run_densenet_training(
         patience: int = 10,
         min_delta: float = 0.001,
         log_interval: int = 100,
-        output_dir: str = None,
-) -> list[tuple[float, float]]:
+        output_dir: Optional[str] = None,
+        optimiser: str = 'sgd',  # 添加optimiser参数，默认为sgd
+        silent: bool = False,     # 添加silent参数，默认为False
+) -> List[Tuple[float, float]]:
     """在 CIFAR-10 数据集上执行 DenseNet 的完整训练流程。
 
     使用 SGD 优化器进行训练，支持学习率调度、早停机制和模型检查点保存。
@@ -97,12 +104,17 @@ def run_densenet_training(
     :type log_interval: int
     :param output_dir: 模型输出目录，默认路径为项目根目录下的 outputs/densenet
     :type output_dir: str
+    :param optimiser: 优化器类型 ('sgd' 或 'adam')，默认 'sgd'
+    :type optimiser: str
+    :param silent: 是否禁止输出训练过程中的日志信息，默认False
+    :type silent: bool
     :return: 包含每个 epoch 验证指标 (loss, accuracy) 的列表
-    :rtype: list[tuple[float, float]]
+    :rtype: List[Tuple[float, float]]
     """
     # 设备与路径准备
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"[DenseNet] Using device: {device}")
+    if not silent:
+        print(f"[DenseNet] Using device: {device}")
 
     # 输出目录处理
     if output_dir is None:
@@ -111,31 +123,37 @@ def run_densenet_training(
         output_dir = str(output_dir)
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    # 数据加载（确保dataset有__len__方法）
+    # 数据加载
     train_loader = get_cifar10_loader(batch_size=train_batch_size, train=True)
     val_loader = get_cifar10_loader(batch_size=test_batch_size, train=False)
     
-    # 类型检查确保dataset是可计算长度的
-    if not hasattr(train_loader.dataset, '__len__'):
-        raise ValueError("Train dataset must implement __len__ method")
-    if not hasattr(val_loader.dataset, '__len__'):
-        raise ValueError("Validation dataset must implement __len__ method")
-
+    # 强制转换为有__len__方法的类型
+    train_dataset = cast(Sized, train_loader.dataset)
+    val_dataset = cast(Sized, val_loader.dataset)
+    
     # 模型初始化
     if model_type == 'densenet121':
         model = DenseNet(num_classes=10).to(device)
     else:
         model = DenseNetCustom(num_classes=10).to(device)
-    print(f"[DenseNet] Initialized {model_type} model with {sum(p.numel() for p in model.parameters()):,} parameters")
+    if not silent:
+        print(f"[DenseNet] Initialized {model_type} model with {sum(p.numel() for p in model.parameters()):,} parameters")
 
-    # 优化器配置（带学习率调度）
-    optimizer = optim.SGD(
-        model.parameters(),
-        lr=lr,
-        momentum=momentum,
-        weight_decay=weight_decay,
-        nesterov=True
-    )
+    # 优化器配置
+    if optimiser.lower() == 'adam':
+        optimizer = optim.Adam(
+            model.parameters(),
+            lr=lr,
+            weight_decay=weight_decay
+        )
+    else:  # 默认使用SGD
+        optimizer = optim.SGD(
+            model.parameters(),
+            lr=lr,
+            momentum=momentum,
+            weight_decay=weight_decay,
+            nesterov=True
+        )
     
     # 学习率调度（在1/2和3/4训练进度时降低学习率）
     scheduler = optim.lr_scheduler.MultiStepLR(
@@ -149,14 +167,15 @@ def run_densenet_training(
     best_loss = float('inf')
     no_improve = 0
     best_path = os.path.join(output_dir, f"{model_type}_best.pth")
-    history = []
+    history: List[Tuple[float, float]] = []
 
     for epoch in range(1, epochs+1):
-        print(f"\n=== Epoch {epoch} ===")
+        if not silent:
+            print(f"\n=== Epoch {epoch} ===")
         
         # 训练阶段
         model.train()
-        running_loss = 0.
+        running_loss = 0.0
         for idx, (x, y) in enumerate(train_loader, 1):
             x, y = x.to(device), y.to(device)
             optimizer.zero_grad()
@@ -164,22 +183,23 @@ def run_densenet_training(
             loss.backward()
             optimizer.step()
             running_loss += loss.item()
-            if idx % log_interval == 0:
-                print(f"[{idx*len(x)}/{len(train_loader.dataset)}] loss: {running_loss/log_interval:.4f}")
-                running_loss = 0.
+            if idx % log_interval == 0 and not silent:
+                print(f"[{idx*len(x)}/{len(train_dataset)}] loss: {running_loss/log_interval:.4f}")
+                running_loss = 0.0
         
         # 验证阶段
         model.eval()
-        total_loss, correct = 0., 0
+        total_loss, correct = 0.0, 0
         with torch.no_grad():
             for x, y in val_loader:
                 x, y = x.to(device), y.to(device)
                 logits = model(x)
                 total_loss += nn.CrossEntropyLoss()(logits, y).item() * x.size(0)
                 correct += (logits.argmax(1) == y).sum().item()
-        avg_loss = total_loss / len(val_loader.dataset)
-        acc = 100. * correct / len(val_loader.dataset)
-        print(f"Val loss: {avg_loss:.4f}, Acc: {acc:.2f}%")
+        avg_loss = total_loss / len(val_dataset)
+        acc = 100.0 * correct / len(val_dataset)
+        if not silent:
+            print(f"Val loss: {avg_loss:.4f}, Acc: {acc:.2f}%")
         history.append((avg_loss, acc))
         
         # 学习率调度
@@ -189,17 +209,20 @@ def run_densenet_training(
         if best_loss - avg_loss > min_delta:
             best_loss, no_improve = avg_loss, 0
             torch.save(model.state_dict(), best_path)
-            print(f"  → loss improved, saved to {best_path}")
+            if not silent:
+                print(f"  → loss improved, saved to {best_path}")
         else:
             no_improve += 1
-            print(f"  → no improvement ({no_improve}/{patience})")
+            if not silent:
+                print(f"  → no improvement ({no_improve}/{patience})")
             
         # 保存检查点
         ckpt = os.path.join(output_dir, f"{model_type}_epoch{epoch}.pth")
         torch.save(model.state_dict(), ckpt)
         
         if no_improve >= patience:
-            print(f"Early stopping at epoch {epoch}")
+            if not silent:
+                print(f"Early stopping at epoch {epoch}")
             model.load_state_dict(torch.load(best_path))
             break
             
@@ -207,4 +230,4 @@ def run_densenet_training(
 
 if __name__ == '__main__':
     # 脚本直接运行时执行默认配置训练（使用定制版DenseNet）
-    run_densenet_training(model_type='densenetcustom')
+    run_densenet_training(model_type='densenetcustom') 
