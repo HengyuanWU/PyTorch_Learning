@@ -11,14 +11,23 @@
 
 import os
 from pathlib import Path
+from typing import Optional, List, Tuple
 
 import torch
 import torch.nn as nn
+import torch
+import torch
 import torch.optim as optim
+import argparse
 
 from models.transformer import Transformer
-from utils.text_dataloader import get_ag_news_dataloader
-from utils.dataloader import PROJECT_ROOT
+
+try:
+    from utils.text_dataloader import get_ag_news_dataloader
+except ImportError:
+    print("警告: 无法导入get_ag_news_dataloader，可能会影响数据加载功能")
+
+from utils.dataloader import PROJECT_ROOT, find_project_root
 from utils.trainer import fit
 
 
@@ -68,6 +77,7 @@ def run_transformer_training(
         min_delta: float = 0.0,
         log_interval: int = 100,
         output_dir: str = "",
+        ablation: Optional[str] = None,
 ) -> list[tuple[float, float]]:
     """在 AG_NEWS 数据集上执行 Transformer 的完整训练流程。
 
@@ -87,6 +97,7 @@ def run_transformer_training(
     :param min_delta: 损失改进最小识别阈值，默认 0.0
     :param log_interval: 训练日志打印间隔（按批次计数），默认 100
     :param output_dir: 模型输出目录，默认路径为项目根目录下的 outputs/transformer
+    :param ablation: 可选参数，用于指定是否进行梯度裁剪实验，'clip_grad'
     :return: 包含每个 epoch 验证指标 (loss, accuracy) 的列表
     """
     # 设备与路径准备
@@ -112,7 +123,8 @@ def run_transformer_training(
         num_heads=num_heads,
         hidden_dim=hidden_dim,
         num_layers=num_layers,
-        num_classes=num_classes
+        num_classes=num_classes,
+        ablation_type=ablation
     ).to(device)
 
     # 优化器配置
@@ -134,6 +146,10 @@ def run_transformer_training(
             outputs = model(tokens, src_key_padding_mask=masks)
             loss = criterion(outputs, labels)
             loss.backward()
+            
+            # 如果是梯度裁剪实验，在这里实现
+            # TODO: Implement gradient clipping if needed
+            
             optimizer.step()
             
             running_loss += loss.item()

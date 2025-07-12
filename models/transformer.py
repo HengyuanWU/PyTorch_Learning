@@ -40,18 +40,8 @@ class PositionalEncoding(nn.Module):
         :param max_len: 支持的最大序列长度，默认5000
         """
         super().__init__()
-        # 创建一个足够大的位置编码矩阵 (max_len, embed_dim)
-        pe = torch.zeros(max_len, embed_dim)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, embed_dim, 2).float() * (-math.log(10000.0) / embed_dim))
-        
-        # 应用正弦和余弦函数
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        
-        # 添加批次维度并注册为非参数缓冲区
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
+        self.embed_dim = embed_dim
+        self.max_len = max_len
         
     def forward(self, x):
         """
@@ -60,7 +50,21 @@ class PositionalEncoding(nn.Module):
         :param x: 输入嵌入 [batch_size, seq_len, embed_dim]
         :return: 位置编码加入后的嵌入 [batch_size, seq_len, embed_dim]
         """
-        return x + self.pe[:, :x.size(1)]
+        batch_size, seq_len, _ = x.shape
+        
+        # 动态创建位置编码
+        pe = torch.zeros(seq_len, self.embed_dim, device=x.device)
+        position = torch.arange(0, seq_len, dtype=torch.float, device=x.device).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, self.embed_dim, 2, device=x.device).float() * 
+                            (-math.log(10000.0) / self.embed_dim))
+        
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position[:, :div_term.size(0)] * div_term)
+        
+        # 添加批次维度
+        pe = pe.unsqueeze(0).expand(batch_size, -1, -1)
+        
+        return x + pe
 
 
 class Transformer(nn.Module):
@@ -72,7 +76,7 @@ class Transformer(nn.Module):
       - 序列平均池化
       - 全连接分类层
     """
-    def __init__(self, vocab_size, embed_dim, num_heads, hidden_dim, num_layers, num_classes, dropout=0.1):
+    def __init__(self, vocab_size, embed_dim, num_heads, hidden_dim, num_layers, num_classes, dropout=0.1, ablation_type=None):
         """
         初始化 Transformer 模型
         
@@ -83,8 +87,18 @@ class Transformer(nn.Module):
         :param num_layers: Transformer 编码器层数
         :param num_classes: 分类类别数
         :param dropout: Dropout 比例，默认 0.1
+        :param ablation_type: 消融实验类型，可选值: no_pe, single_head, no_ffn, freeze_emb, no_dropout, clip_grad
         """
         super().__init__()
+        
+        # 保存ablation类型
+        self.ablation_type = ablation_type
+        
+        # 根据ablation_type调整参数
+        if ablation_type == 'single_head':
+            num_heads = 1
+        elif ablation_type == 'no_dropout':
+            dropout = 0.0
         
         # 词嵌入层
         self.embedding = nn.Embedding(vocab_size, embed_dim)
@@ -96,7 +110,7 @@ class Transformer(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=embed_dim,
             nhead=num_heads,
-            dim_feedforward=hidden_dim,
+            dim_feedforward=hidden_dim if ablation_type != 'no_ffn' else embed_dim,
             dropout=dropout,
             batch_first=True  # 输入格式为 [batch, seq, features]
         )
@@ -109,6 +123,10 @@ class Transformer(nn.Module):
         
         # 初始化参数
         self._init_parameters()
+        
+        # 如果是冻结embedding的ablation实验，冻结embedding层
+        if ablation_type == 'freeze_emb':
+            self.embedding.weight.requires_grad = False
         
     def _init_parameters(self):
         """初始化模型参数"""
@@ -132,8 +150,9 @@ class Transformer(nn.Module):
         # 词嵌入 [batch_size, seq_len] -> [batch_size, seq_len, embed_dim]
         embedded = self.embedding(x)
         
-        # 添加位置编码
-        embedded = self.pos_encoder(embedded)
+                # 添加位置编码，除非ablation_type是'no_pe'
+        if self.ablation_type != 'no_pe':
+            embedded = self.pos_encoder(embedded)
         
         # 通过 Transformer 编码器
         # src_key_padding_mask 中 True 表示需要掩盖的位置（如填充位置）
